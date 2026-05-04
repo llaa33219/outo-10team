@@ -76,8 +76,6 @@ def setup(ctx: click.Context, **kwargs) -> None:
     def _get_value(flag_name: str, prompt_text: str, default_val: str | int | None = None, required: bool = False) -> str | int:
         if flag_name in flags:
             return flags[flag_name]
-        if has_flags and not required:
-            return default_val
         if existing:
             existing_val = getattr(existing.provider if flag_name in ("provider_url", "api_key", "model") else
                                     existing.chatserver if flag_name in ("chatserver_url", "workspace_id", "bot_password") else
