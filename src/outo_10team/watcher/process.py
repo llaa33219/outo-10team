@@ -21,6 +21,12 @@ def _resolve_host_url(url: str) -> str:
 def _setup_outoac(config: dict) -> None:
     provider = config.get("provider", {})
     model = provider.get("default_model", "gpt-4o")
+    agent_name = config["agent_name"]
+    agent_configs: dict[str, str] = config.get("agent_configs", {})
+
+    agents: dict[str, str] = {}
+    for name in agent_configs:
+        agents[name] = f"/root/.outoac/agents/{name}.md"
 
     outoac_config = {
         "providers": {
@@ -32,16 +38,14 @@ def _setup_outoac(config: dict) -> None:
                 "max_output_tokens": 0,
             }
         },
-        "agents": {
-            "main": "/root/.outoac/agents/main.md",
-        },
-        "default_agent": "main",
+        "agents": agents,
+        "default_agent": agent_name,
         "skills_dir": "/root/.outoac/skills/",
     }
 
     OUTOAC_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
     OUTOAC_CONFIG_PATH.write_text(json.dumps(outoac_config, indent=2))
-    print("[watcher] outoac config written", flush=True)
+    print(f"[watcher] outoac config written with agents: {list(agents.keys())}", flush=True)
 
 
 def load_config() -> dict:
@@ -105,7 +109,7 @@ def extract_mention(content: str, agent_name: str) -> str | None:
     return content.replace(f"@{agent_name}", "").strip()
 
 
-def run_agent(message: str, agent_name: str = "main") -> str:
+def run_agent(message: str, agent_name: str) -> str:
     try:
         result = subprocess.run(
             ["outoac", "chat", message, "--agent", agent_name],
@@ -157,7 +161,7 @@ async def poll_room(
         print(f"[mention] room={room_id} {username}: {cleaned[:100]}", flush=True)
 
         prompt = f"[{username}]: {cleaned}"
-        response = run_agent(prompt, "main")
+        response = run_agent(prompt, agent_name)
         print(f"[agent] {response[:200]}", flush=True)
 
         await send_message(base_url, token, workspace_id, room_id, response)

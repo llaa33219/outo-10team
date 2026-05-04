@@ -11,6 +11,7 @@ class AgentDef:
 @dataclass(frozen=True)
 class TeamConfig:
     team_name: str
+    default_name: str
     description: str
     agents: tuple[AgentDef, ...] = field(default_factory=tuple)
 

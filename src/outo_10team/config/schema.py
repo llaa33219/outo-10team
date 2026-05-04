@@ -32,3 +32,4 @@ class AppConfig(BaseModel):
     provider: ProviderConfig = ProviderConfig()
     chatserver: ChatserverConfig = ChatserverConfig()
     containers: ContainerConfig = ContainerConfig()
+    team_names: dict[str, str] = {}

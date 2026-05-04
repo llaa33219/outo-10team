@@ -23,7 +23,16 @@ def _get_containerfile_path() -> Path:
         import importlib_resources
         return Path(str(importlib_resources.files("outo_10team") / "Containerfile"))
 
+
 console = Console()
+
+
+def _resolve_team_name(team_name: str, config) -> tuple[str, str]:
+    teams = config.team_names
+    for default, custom in teams.items():
+        if team_name == custom or team_name == default:
+            return custom, default
+    return team_name, team_name
 
 
 @click.group()
@@ -36,9 +45,19 @@ def cli(ctx: click.Context, config_dir: str | None) -> None:
 
 
 @cli.command()
+@click.option("--provider-url", help="OpenAI-compatible API base URL")
+@click.option("--api-key", help="API key for provider")
+@click.option("--model", help="Default model name")
+@click.option("--chatserver-url", help="Chatserver URL")
+@click.option("--workspace-id", help="Workspace ID (required)")
+@click.option("--bot-password", help="Bot password for all teams")
+@click.option("--mem-limit", default="512m", help="Memory limit per container")
+@click.option("--cpu-shares", default=512, type=int, help="CPU shares per container")
+@click.option("--pids-limit", default=100, type=int, help="PID limit per container")
+@click.option("--skip-team-names", is_flag=True, help="Use default team names without prompting")
 @click.pass_context
-def setup(ctx: click.Context) -> None:
-    from .agents.registry import TEAMS
+def setup(ctx: click.Context, **kwargs) -> None:
+    from .agents.registry import DEFAULT_TEAM_CONFIGS, create_teams, get_default_team_names
     from .agents.generator import generate_all_team_agents
     from .chatserver.client import ChatserverClient
     from .config.manager import ConfigManager
@@ -51,32 +70,64 @@ def setup(ctx: click.Context) -> None:
         existing = config_mgr.load()
         console.print("[dim]Existing config found. Updating...[/dim]")
 
-    console.print("[bold]LLM Provider Configuration[/bold]\n")
-    base_url = click.prompt("OpenAI-compatible API base URL", default=existing.provider.base_url if existing else "http://localhost:11434/v1")
-    api_key = click.prompt("API key", default=existing.provider.api_key if existing else "")
-    model = click.prompt("Default model", default=existing.provider.default_model if existing else "gpt-4o")
+    flags = {k: v for k, v in kwargs.items() if v is not None and v is not False}
+    has_flags = bool(flags)
 
-    console.print("\n[bold]Chatserver Configuration[/bold]\n")
-    chatserver_url = click.prompt("Chatserver URL", default=existing.chatserver.url if existing else "http://localhost:18279")
-    bot_password = click.prompt("Bot password for all teams", default=existing.chatserver.bot_password if existing else "outo-10team-bot-2026")
-    
-    console.print("\n[dim]Create a workspace in outo-chatserver web UI first, then paste the workspace ID here.[/dim]")
-    workspace_id = click.prompt("Workspace ID", default=existing.chatserver.workspace_id if existing else "")
-    
-    if not workspace_id:
-        console.print("[red]Error: Workspace ID is required.[/red]")
-        console.print("[dim]Please create a workspace in the chatserver and provide the ID.[/dim]")
-        sys.exit(1)
+    def _get_value(flag_name: str, prompt_text: str, default_val: str | int | None = None, required: bool = False) -> str | int:
+        if flag_name in flags:
+            return flags[flag_name]
+        if has_flags and not required:
+            return default_val
+        if existing:
+            existing_val = getattr(existing.provider if flag_name in ("provider_url", "api_key", "model") else
+                                    existing.chatserver if flag_name in ("chatserver_url", "workspace_id", "bot_password") else
+                                    existing.containers, flag_name.replace("-", "_"), None)
+            if existing_val is not None:
+                default_val = existing_val
+        if required and not default_val:
+            val = click.prompt(prompt_text)
+            if not val:
+                console.print(f"[red]Error: {prompt_text} is required.[/red]")
+                sys.exit(1)
+            return val
+        return click.prompt(prompt_text, default=default_val)
 
-    console.print("\n[bold]Container Configuration[/bold]\n")
-    mem_limit = click.prompt("Memory limit per container", default=existing.containers.mem_limit if existing else "512m")
-    cpu_shares = click.prompt("CPU shares", default=str(existing.containers.cpu_shares if existing else 512))
-    pids_limit = click.prompt("PID limit", default=str(existing.containers.pids_limit if existing else 100))
+    base_url = _get_value("provider_url", "OpenAI-compatible API base URL", "http://localhost:11434/v1")
+    api_key = _get_value("api_key", "API key", "")
+    model = _get_value("model", "Default model", "gpt-4o")
+    chatserver_url = _get_value("chatserver_url", "Chatserver URL", "http://localhost:18279")
+    bot_password = _get_value("bot_password", "Bot password for all teams", "outo-10team-bot-2026")
+    workspace_id = _get_value("workspace_id", "Workspace ID", "", required=True)
+    mem_limit = _get_value("mem_limit", "Memory limit per container", "512m")
+    cpu_shares = int(_get_value("cpu_shares", "CPU shares", 512))
+    pids_limit = int(_get_value("pids_limit", "PID limit", 100))
+
+    team_names: dict[str, str] = {}
+    if existing and existing.team_names:
+        team_names = dict(existing.team_names)
+
+    if not kwargs.get("skip_team_names"):
+        console.print("\n[bold]Team Names[/bold]")
+        console.print("[dim]Press Enter to keep the default name, or type a custom name.[/dim]\n")
+
+        for default_name, description, _ in DEFAULT_TEAM_CONFIGS:
+            current = team_names.get(default_name, default_name)
+            custom = click.prompt(f"  {description}", default=current)
+            if custom and custom != default_name:
+                team_names[default_name] = custom
+
+    for default_name, custom_name in team_names.items():
+        if len(custom_name) < 3:
+            console.print(f"[red]Error: Team name '{custom_name}' (for {default_name}) is too short. Must be at least 3 characters.[/red]")
+            sys.exit(1)
+
+    teams = create_teams(team_names)
 
     app_config = AppConfig(
         provider=ProviderConfig(base_url=base_url, api_key=api_key, default_model=model),
         chatserver=ChatserverConfig(url=chatserver_url, bot_password=bot_password, workspace_id=workspace_id),
-        containers=ContainerConfig(mem_limit=mem_limit, cpu_shares=int(cpu_shares), pids_limit=int(pids_limit)),
+        containers=ContainerConfig(mem_limit=mem_limit, cpu_shares=cpu_shares, pids_limit=pids_limit),
+        team_names=team_names,
     )
 
     config_mgr.save(app_config)
@@ -86,7 +137,7 @@ def setup(ctx: click.Context) -> None:
     client = ChatserverClient(chatserver_url)
 
     registered = 0
-    for team in TEAMS:
+    for team in teams:
         try:
             client.register(team.team_name, bot_password)
             console.print(f"  [green]+[/green] Registered: {team.team_name}")
@@ -94,6 +145,8 @@ def setup(ctx: click.Context) -> None:
         except httpx.HTTPStatusError as e:
             try:
                 detail = e.response.json().get("detail", "")
+                if isinstance(detail, list):
+                    detail = "; ".join(str(d) for d in detail)
             except Exception:
                 detail = ""
             if "already exists" in detail.lower():
@@ -107,7 +160,7 @@ def setup(ctx: click.Context) -> None:
 
     console.print(f"\n[bold]Joining workspace {workspace_id}...[/bold]\n")
     joined = 0
-    for team in TEAMS:
+    for team in teams:
         try:
             client.login(team.team_name, bot_password)
             client.join_workspace(workspace_id)
@@ -119,7 +172,7 @@ def setup(ctx: click.Context) -> None:
 
     console.print("\n[bold]Generating agent definitions...[/bold]\n")
     agents_dir = config_mgr.config_dir / "agents"
-    generate_all_team_agents(TEAMS, agents_dir, provider="default", model=model)
+    generate_all_team_agents(teams, agents_dir, provider="default", model=model)
     console.print(f"[green]Agent definitions generated in {agents_dir}[/green]")
 
     console.print("\n[bold cyan]Setup complete![/bold cyan]")
@@ -131,7 +184,7 @@ def setup(ctx: click.Context) -> None:
 @cli.command()
 @click.pass_context
 def run(ctx: click.Context) -> None:
-    from .agents.registry import TEAMS
+    from .agents.registry import create_teams
     from .config.manager import ConfigManager
     from .containers.manager import ContainerManager
     from .chatserver.client import ChatserverClient
@@ -146,6 +199,8 @@ def run(ctx: click.Context) -> None:
     if not config.chatserver.workspace_id:
         console.print("[red]No workspace ID configured. Run: outo-10team setup[/red]")
         sys.exit(1)
+
+    teams = create_teams(config.team_names)
 
     console.print("[bold]Connecting to Podman...[/bold]")
     cm = ContainerManager()
@@ -169,7 +224,7 @@ def run(ctx: click.Context) -> None:
     client = ChatserverClient(config.chatserver.url)
 
     logged_in_teams: list[str] = []
-    for team in TEAMS:
+    for team in teams:
         try:
             client.login(team.team_name, config.chatserver.bot_password)
             logged_in_teams.append(team.team_name)
@@ -196,9 +251,15 @@ def run(ctx: click.Context) -> None:
     agents_dir = config_mgr.config_dir / "agents"
     container_configs: list[dict] = []
 
-    for team in TEAMS:
+    for team in teams:
         if team.team_name not in logged_in_teams:
             continue
+
+        agent_configs: dict[str, str] = {}
+        team_agents_dir = agents_dir / team.team_name
+        if team_agents_dir.exists():
+            for md_file in team_agents_dir.glob("*.md"):
+                agent_configs[md_file.stem] = md_file.read_text()
 
         watcher_config = {
             "agent_name": team.team_name,
@@ -210,16 +271,12 @@ def run(ctx: click.Context) -> None:
                 "api_key": config.provider.api_key,
                 "default_model": config.provider.default_model,
             },
+            "agent_configs": agent_configs,
         }
-
-        agent_configs: dict[str, str] = {}
-        team_agents_dir = agents_dir / team.team_name
-        if team_agents_dir.exists():
-            for md_file in team_agents_dir.glob("*.md"):
-                agent_configs[md_file.stem] = md_file.read_text()
 
         container_configs.append({
             "name": team.team_name,
+            "slug": team.default_name,
             "image": "outo-10team:latest",
             "watcher_config": watcher_config,
             "agent_configs": agent_configs,
@@ -241,7 +298,7 @@ def run(ctx: click.Context) -> None:
     console.print(f"\n[bold green]All {len(container_configs)} teams are running![/bold green]")
     console.print("\nCommands:")
     console.print("  outo-10team status    - Check container status")
-    console.print("  outo-10team logs TEAM - View team logs")
+    console.print("  outo-10team logs TEAM - View team logs (custom or default name)")
     console.print("  outo-10team stop      - Stop all containers")
 
 
@@ -272,14 +329,24 @@ def status(ctx: click.Context) -> None:
 @click.option("--lines", "-n", default=50, type=int, help="Number of log lines")
 @click.pass_context
 def logs(ctx: click.Context, team_name: str, lines: int) -> None:
+    from .config.manager import ConfigManager
     from .containers.manager import ContainerManager
+
+    config_mgr = ConfigManager(ctx.obj.get("config_dir"))
+    if not config_mgr.exists():
+        console.print("[red]No config found.[/red]")
+        sys.exit(1)
+
+    config = config_mgr.load()
+    custom, default = _resolve_team_name(team_name, config)
+    slug = default
 
     cm = ContainerManager()
     cm.connect()
 
-    container = cm.get_container(f"outo10team-{team_name}")
+    container = cm.get_container(f"outo10team-{slug}")
     if not container:
-        console.print(f"[red]Container not found: outo10team-{team_name}[/red]")
+        console.print(f"[red]Container not found: outo10team-{slug}[/red]")
         sys.exit(1)
 
     for line in container.logs(tail=lines, stream=True):

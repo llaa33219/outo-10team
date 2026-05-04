@@ -51,6 +51,7 @@ class ContainerManager:
     def create_container(
         self,
         name: str,
+        slug: str,
         image: str,
         watcher_config: dict,
         agent_configs: dict[str, str],
@@ -60,7 +61,7 @@ class ContainerManager:
     ) -> Any:
         labels = {CONTAINER_LABEL: "true", "team": name}
 
-        config_dir = Path(f"/tmp/outo-10team/{name}")
+        config_dir = Path(f"/tmp/outo-10team/{slug}")
         config_dir.mkdir(parents=True, exist_ok=True)
 
         watcher_config_path = config_dir / "watcher_config.json"
@@ -79,7 +80,7 @@ class ContainerManager:
         try:
             container = self.client.containers.create(
                 image=image,
-                name=f"outo10team-{name}",
+                name=f"outo10team-{slug}",
                 labels=labels,
                 mem_limit=mem_limit,
                 cpu_shares=cpu_shares,
