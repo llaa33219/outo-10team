@@ -1,0 +1,74 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "outo-10team"
+version = "0.1.0"
+description = "Orchestrate 10 AI agent teams in isolated Podman containers, communicating via outo-chatserver"
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.11"
+authors = [
+    {name = "outo-10team contributors"},
+]
+keywords = ["ai", "agents", "orchestration", "podman", "multi-agent", "teams"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+dependencies = [
+    "click>=8.1.0",
+    "podman>=5.0.0",
+    "httpx>=0.25.0",
+    "pydantic>=2.0.0",
+    "rich>=13.0.0",
+    "platformdirs>=4.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.24.0",
+    "pytest-cov>=5.0.0",
+    "ruff>=0.5.0",
+    "mypy>=1.10.0",
+]
+
+[project.scripts]
+outo-10team = "outo_10team.cli:cli"
+
+[project.urls]
+Homepage = "https://github.com/llaa33219/outo-10team"
+Documentation = "https://github.com/llaa33219/outo-10team#readme"
+Repository = "https://github.com/llaa33219/outo-10team"
+Issues = "https://github.com/llaa33219/outo-10team/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/outo_10team"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"src/outo_10team/Containerfile" = "outo_10team/Containerfile"
+
+[tool.ruff]
+target-version = "py311"
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+pythonpath = ["src"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_return_any = true
+warn_unused_configs = true
