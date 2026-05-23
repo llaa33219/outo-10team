@@ -6,6 +6,15 @@ class AgentDef:
     name: str
     role: str
     instructions: str
+    goal: str = ""
+    backstory: str = ""
+    collaboration_notes: str = ""
+    domain_expertise: tuple[str, ...] = ()
+    task_types: tuple[str, ...] = ()
+    quality_criteria: tuple[str, ...] = ()
+    wiki_namespace: str = ""
+    communication_style: str = ""
+    escalation_triggers: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

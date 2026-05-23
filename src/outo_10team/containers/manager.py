@@ -37,7 +37,7 @@ class ContainerManager:
     def build_image(self, dockerfile_path: Path, tag: str = "outo-10team:latest") -> None:
         logger.info("Building image: %s", tag)
         subprocess.run(
-            ["podman", "build", "-t", tag, "-f", str(dockerfile_path), str(dockerfile_path.parent)],
+            ["podman", "build", "--no-cache", "-t", tag, "-f", str(dockerfile_path), str(dockerfile_path.parent)],
             check=True,
         )
         logger.info("Image built: %s", tag)
@@ -58,6 +58,10 @@ class ContainerManager:
         mem_limit: str = "512m",
         cpu_shares: int = 512,
         pids_limit: int = 100,
+        skills_dir: Path | None = None,
+        data_dir: Path | None = None,
+        shared_dir: Path | None = None,
+        wiki_dir: Path | None = None,
     ) -> Any:
         labels = {CONTAINER_LABEL: "true", "team": name}
 
@@ -77,6 +81,21 @@ class ContainerManager:
             str(agent_dir): {"bind": "/root/.outoac/agents", "mode": "ro"},
         }
 
+        if skills_dir and skills_dir.exists():
+            volumes[str(skills_dir)] = {"bind": "/root/.outoac/skills", "mode": "rw"}
+
+        if data_dir:
+            data_dir.mkdir(parents=True, exist_ok=True)
+            volumes[str(data_dir)] = {"bind": "/data", "mode": "rw"}
+
+        if shared_dir:
+            shared_dir.mkdir(parents=True, exist_ok=True)
+            volumes[str(shared_dir)] = {"bind": "/shared", "mode": "rw"}
+
+        if wiki_dir:
+            wiki_dir.mkdir(parents=True, exist_ok=True)
+            volumes[str(wiki_dir)] = {"bind": "/root/.outoac/wiki", "mode": "rw"}
+
         try:
             container = self.client.containers.create(
                 image=image,
@@ -93,6 +112,72 @@ class ContainerManager:
             raise RuntimeError(f"Image not found: {image}. Run 'outo-10team build' first.")
 
         return container
+
+    def sync_skills(self, container_id: str, skills_dir: Path) -> None:
+        import io
+        import tarfile
+        import tempfile
+
+        if not skills_dir.exists():
+            raise FileNotFoundError(f"Skills directory not found: {skills_dir}")
+
+        container = self.client.containers.get(container_id)
+        container_name = container.name
+
+        tar_buffer = io.BytesIO()
+        with tarfile.open(fileobj=tar_buffer, mode="w") as tar:
+            for item in skills_dir.iterdir():
+                if item.is_dir():
+                    tar.add(item, arcname=item.name)
+        tar_data = tar_buffer.getvalue()
+
+        with tempfile.NamedTemporaryFile(suffix=".tar", delete=False) as tmp:
+            tmp.write(tar_data)
+            tmp_path = tmp.name
+
+        try:
+            result = subprocess.run(
+                ["podman", "cp", tmp_path, f"{container_name}:/tmp/skills_sync.tar"],
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode != 0:
+                raise RuntimeError(
+                    f"podman cp failed: {result.stderr.strip()}"
+                )
+
+            exit_code, _ = container.exec_run(
+                ["mkdir", "-p", "/root/.outoac/skills"]
+            )
+            if exit_code != 0:
+                raise RuntimeError(
+                    f"Failed to create skills directory in container {container_name}"
+                )
+
+            exit_code, output = container.exec_run(
+                [
+                    "tar",
+                    "-xf",
+                    "/tmp/skills_sync.tar",
+                    "-C",
+                    "/root/.outoac/skills",
+                    "--no-same-owner",
+                ],
+                stderr=True,
+            )
+            if exit_code != 0:
+                stderr_text = (
+                    output.decode("utf-8", errors="replace")
+                    if isinstance(output, bytes)
+                    else str(output)
+                )
+                raise RuntimeError(
+                    f"Failed to extract skills in container {container_name}: {stderr_text}"
+                )
+
+            container.exec_run(["rm", "-f", "/tmp/skills_sync.tar"])
+        finally:
+            Path(tmp_path).unlink(missing_ok=True)
 
     def start_container(self, container_id: str) -> None:
         container = self.client.containers.get(container_id)

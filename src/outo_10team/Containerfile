@@ -10,7 +10,8 @@ RUN uv venv /opt/venv
 
 ENV PATH="/opt/venv/bin:$PATH"
 
-RUN uv pip install --python /opt/venv/bin/python outo-agentcore httpx
+ARG CACHE_BUST=3
+RUN uv pip install --python /opt/venv/bin/python "outo-agentcore>=0.3.0" httpx
 
 COPY watcher/process.py /opt/outo-10team/watcher.py
 

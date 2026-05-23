@@ -28,8 +28,18 @@ class ContainerConfig(BaseModel):
     pids_limit: int = 100
 
 
+class WikiConfig(BaseModel):
+    enabled: bool = False
+    provider: str = ""
+    model: str = ""
+    api_key: str = ""
+    base_url: str = ""
+    debug: bool = False
+
+
 class AppConfig(BaseModel):
     provider: ProviderConfig = ProviderConfig()
     chatserver: ChatserverConfig = ChatserverConfig()
     containers: ContainerConfig = ContainerConfig()
+    wiki: WikiConfig = WikiConfig()
     team_names: dict[str, str] = {}

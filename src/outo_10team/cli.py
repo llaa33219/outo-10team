@@ -1,11 +1,8 @@
 from __future__ import annotations
 
-import json
-import os
-import signal
 import sys
-import tempfile
 from pathlib import Path
+from typing import Any
 
 import click
 import httpx
@@ -16,12 +13,8 @@ from . import __version__
 
 
 def _get_containerfile_path() -> Path:
-    if sys.version_info >= (3, 9):
-        from importlib.resources import files
-        return Path(str(files("outo_10team") / "Containerfile"))
-    else:
-        import importlib_resources
-        return Path(str(importlib_resources.files("outo_10team") / "Containerfile"))
+    from importlib.resources import files
+    return Path(str(files("outo_10team") / "Containerfile"))
 
 
 console = Console()
@@ -57,8 +50,8 @@ def cli(ctx: click.Context, config_dir: str | None) -> None:
 @click.option("--skip-team-names", is_flag=True, help="Use default team names without prompting")
 @click.pass_context
 def setup(ctx: click.Context, **kwargs) -> None:
-    from .agents.registry import DEFAULT_TEAM_CONFIGS, create_teams, get_default_team_names
     from .agents.generator import generate_all_team_agents
+    from .agents.registry import DEFAULT_TEAM_CONFIGS, create_teams
     from .chatserver.client import ChatserverClient
     from .config.manager import ConfigManager
     from .config.schema import AppConfig, ChatserverConfig, ContainerConfig, ProviderConfig
@@ -71,16 +64,30 @@ def setup(ctx: click.Context, **kwargs) -> None:
         console.print("[dim]Existing config found. Updating...[/dim]")
 
     flags = {k: v for k, v in kwargs.items() if v is not None and v is not False}
-    has_flags = bool(flags)
 
-    def _get_value(flag_name: str, prompt_text: str, default_val: str | int | None = None, required: bool = False) -> str | int:
+    def _get_value(
+        flag_name: str,
+        prompt_text: str,
+        default_val: str | int | None = None,
+        required: bool = False,
+    ) -> str | int:
         if flag_name in flags:
             return flags[flag_name]
         if existing:
-            existing_val = getattr(existing.provider if flag_name in ("provider_url", "api_key", "model") else
-                                    existing.chatserver if flag_name in ("chatserver_url", "workspace_id", "bot_password") else
-                                    existing.containers, flag_name.replace("-", "_"), None)
-            if existing_val is not None:
+            attr_map = {
+                "provider_url": "base_url",
+                "model": "default_model",
+                "chatserver_url": "url",
+            }
+            attr_name = attr_map.get(flag_name, flag_name.replace("-", "_"))
+            existing_val = getattr(
+                existing.provider if flag_name in ("provider_url", "api_key", "model")
+                else existing.chatserver if flag_name in ("chatserver_url", "workspace_id", "bot_password")
+                else existing.containers,
+                attr_name,
+                None,
+            )
+            if existing_val is not None and existing_val != "":
                 default_val = existing_val
         if required and not default_val:
             val = click.prompt(prompt_text)
@@ -116,7 +123,10 @@ def setup(ctx: click.Context, **kwargs) -> None:
 
     for default_name, custom_name in team_names.items():
         if len(custom_name) < 3:
-            console.print(f"[red]Error: Team name '{custom_name}' (for {default_name}) is too short. Must be at least 3 characters.[/red]")
+            console.print(
+                f"[red]Error: Team name '{custom_name}' (for {default_name}) "
+                "is too short. Must be at least 3 characters.[/red]"
+            )
             sys.exit(1)
 
     teams = create_teams(team_names)
@@ -183,9 +193,9 @@ def setup(ctx: click.Context, **kwargs) -> None:
 @click.pass_context
 def run(ctx: click.Context) -> None:
     from .agents.registry import create_teams
+    from .chatserver.client import ChatserverClient
     from .config.manager import ConfigManager
     from .containers.manager import ContainerManager
-    from .chatserver.client import ChatserverClient
 
     config_mgr = ConfigManager(ctx.obj.get("config_dir"))
     if not config_mgr.exists():
@@ -247,6 +257,16 @@ def run(ctx: click.Context) -> None:
     console.print("\n[bold]Preparing container configurations...[/bold]\n")
 
     agents_dir = config_mgr.config_dir / "agents"
+    skills_dir = Path.home() / ".agents" / "skills"
+    data_base_dir = config_mgr.config_dir / "data"
+    shared_dir = config_mgr.config_dir / "shared"
+    shared_dir.mkdir(parents=True, exist_ok=True)
+    if skills_dir.exists():
+        console.print(f"  [dim]Skills directory found: {skills_dir}[/dim]")
+    else:
+        console.print(f"  [dim]No skills directory found at {skills_dir}[/dim]")
+    console.print(f"  [dim]Shared directory: {shared_dir}[/dim]")
+
     container_configs: list[dict] = []
 
     for team in teams:
@@ -270,9 +290,21 @@ def run(ctx: click.Context) -> None:
                 "default_model": config.provider.default_model,
             },
             "agent_configs": agent_configs,
+            "wiki": {
+                "enabled": config.wiki.enabled,
+                "provider": config.wiki.provider or config.provider.default_model,
+                "model": config.wiki.model or config.provider.default_model,
+                "api_key": config.wiki.api_key or config.provider.api_key,
+                "base_url": config.wiki.base_url or config.provider.base_url,
+                "debug": config.wiki.debug,
+            },
         }
 
-        container_configs.append({
+        team_data_dir = data_base_dir / team.default_name
+        team_data_dir.mkdir(parents=True, exist_ok=True)
+        console.print(f"  [dim]Data directory: {team_data_dir}[/dim]")
+
+        cfg: dict[str, Any] = {
             "name": team.team_name,
             "slug": team.default_name,
             "image": "outo-10team:latest",
@@ -281,7 +313,19 @@ def run(ctx: click.Context) -> None:
             "mem_limit": config.containers.mem_limit,
             "cpu_shares": config.containers.cpu_shares,
             "pids_limit": config.containers.pids_limit,
-        })
+            "data_dir": team_data_dir,
+            "shared_dir": shared_dir,
+        }
+        if skills_dir.exists():
+            cfg["skills_dir"] = skills_dir
+
+        if config.wiki.enabled:
+            wiki_dir = shared_dir / "wiki"
+            wiki_dir.mkdir(parents=True, exist_ok=True)
+            cfg["wiki_dir"] = wiki_dir
+            console.print(f"  [dim]Wiki directory: {wiki_dir}[/dim]")
+
+        container_configs.append(cfg)
 
     console.print("[bold]Starting containers...[/bold]\n")
 
@@ -378,3 +422,60 @@ def build(ctx: click.Context) -> None:
     cm = ContainerManager()
     cm.build_image(containerfile_path)
     console.print("[green]Build complete: outo-10team:latest[/green]")
+
+
+@cli.group()
+def skill() -> None:
+    """Manage skills in team containers."""
+    pass
+
+
+@skill.command("sync")
+@click.argument("team_name", required=False)
+@click.pass_context
+def skill_sync(ctx: click.Context, team_name: str | None) -> None:
+    from .config.manager import ConfigManager
+    from .containers.manager import ContainerManager
+
+    config_mgr = ConfigManager(ctx.obj.get("config_dir"))
+    if not config_mgr.exists():
+        console.print("[red]No config found.[/red]")
+        sys.exit(1)
+
+    config = config_mgr.load()
+
+    skills_dir = Path.home() / ".agents" / "skills"
+    if not skills_dir.exists():
+        console.print(f"[red]Skills directory not found: {skills_dir}[/red]")
+        sys.exit(1)
+
+    cm = ContainerManager()
+    cm.connect()
+
+    if team_name:
+        custom, default = _resolve_team_name(team_name, config)
+        slug = default
+        container = cm.get_container(f"outo10team-{slug}")
+        if not container:
+            console.print(f"[red]Container not found: outo10team-{slug}[/red]")
+            sys.exit(1)
+        try:
+            cm.sync_skills(container.id, skills_dir)
+            console.print(f"[green]Synced skills to {custom or default}[/green]")
+        except Exception as e:
+            console.print(f"[red]Failed to sync skills to {custom or default}: {e}[/red]")
+            sys.exit(1)
+    else:
+        containers = cm.list_outo_containers()
+        if not containers:
+            console.print("[yellow]No running team containers found.[/yellow]")
+            sys.exit(0)
+
+        for c in containers:
+            try:
+                cm.sync_skills(c["id"], skills_dir)
+                console.print(f"  [green]+[/green] Synced skills to {c.get('team', c['name'])}")
+            except Exception as e:
+                console.print(f"  [red]![/red] Failed to sync skills to {c.get('team', c['name'])}: {e}")
+
+        console.print("[green]Skill sync complete![/green]")
